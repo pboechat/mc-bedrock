@@ -1,0 +1,56 @@
+services:
+  bedrock:
+    image: itzg/minecraft-bedrock-server:latest
+    container_name: mc-bedrock
+    restart: unless-stopped
+
+    # Bedrock uses UDP 19132 by default
+    ports:
+      - "19132:19132/udp"
+
+    environment:
+      EULA: "TRUE"
+      SERVER_NAME: "Kaaruna"
+      GAMEMODE: "survival"
+      DIFFICULTY: "normal"
+      MAX_PLAYERS: "10"
+      ONLINE_MODE: "true"
+      ALLOW_CHEATS: "false"
+      # optional:
+      LEVEL_NAME: "world"
+
+    volumes:
+      - ./data:/data
+    # Hardening (optional but recommended)
+    # read_only: true
+    # tmpfs:
+    #   - /tmp
+    # cap_drop:
+    #   - ALL
+    # security_opt:
+    #   - no-new-privileges:true
+
+  mapper:
+    build: ./mapper
+    container_name: mc-map
+    restart: unless-stopped
+    environment:
+      # Path to Bedrock world inside this container (via volume mount)
+      BEDROCK_WORLD_DIR: "/bedrock/worlds/Bedrock level"
+      # Where to write the rendered map files
+      OUTPUT_PATH: "/webroot"
+      # BlueMap configuration directory
+      CONFIG_DIR: "/opt/bluemap/config"
+      # Number of threads for rendering (adjust based on CPU)
+      BLUEMAP_RENDER_THREADS: "2"
+      # How often to re-render the map (in seconds, default: 3600 = 1 hour)
+      RENDER_INTERVAL: "3600"
+    ports:
+      - "8100:8100"
+    volumes:
+      # Mount Bedrock server data as read-only
+      - ./data:/bedrock:ro
+      # Persistent map output
+      - ./mapper-output:/webroot
+      # Persistent BlueMap configuration
+      - ./mapper-config:/opt/bluemap/config
