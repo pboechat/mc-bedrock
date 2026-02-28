@@ -113,7 +113,7 @@ main() {
     log_info "     export PATH=$HOME/.local/cmake/bin:\$PATH"
     log_info ""
     log_info "  3. Run the mapper:"
-    log_info "     python entrypoint.py \\"
+    log_info "     python $REPO_ROOT/mapper/mapper.py \\"
     log_info "       --bedrock-world-dir $REPO_ROOT/data/worlds/world \\"
     log_info "       --output-path $REPO_ROOT/mapper-output \\"
     log_info "       --config-dir $HOME/.config/bluemap \\"

@@ -401,5 +401,5 @@ docker logs -f mc-bedrock
 sudo journalctl -u mc-bedrock -f
 
 # Using utility script
-./tail.sh
+./tail.sh mc-bedrock
 ```

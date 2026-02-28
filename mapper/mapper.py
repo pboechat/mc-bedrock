@@ -3,8 +3,11 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import shutil
 import subprocess
+import sys
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,6 +15,7 @@ from typing import Sequence
 
 import amulet
 from amulet.api.errors import LoaderNoneMatched
+from amulet.level.formats.anvil_world import AnvilFormat
 
 
 @dataclass(frozen=True)
@@ -32,6 +36,7 @@ class Config:
     max_y: int = 320
     hires_view_distance: int = 5
     lowres_view_distance: int = 7
+    ambient_light: float = 1.0
 
 
 def log(message: str) -> None:
@@ -47,6 +52,16 @@ def ensure_directories(cfg: Config) -> None:
     (cfg.config_dir / "maps").mkdir(parents=True, exist_ok=True)
 
 
+def normalize_output_path(path: Path) -> Path:
+    """Normalize mapper output path and ensure it ends with 'webroot'."""
+    normalized = path.expanduser()
+    if not normalized.is_absolute():
+        normalized = (Path.cwd() / normalized).resolve()
+    if normalized.name != "webroot":
+        normalized = normalized / "webroot"
+    return normalized
+
+
 def validate_environment(cfg: Config) -> None:
     """Validate required files and directories exist."""
     if not cfg.bluemap_jar.exists():
@@ -55,8 +70,8 @@ def validate_environment(cfg: Config) -> None:
         )
 
     if not cfg.bedrock_world_dir.exists():
-        log(
-            f"ERROR: Bedrock world directory not found at {cfg.bedrock_world_dir}")
+        log("ERROR: Bedrock world directory not found"
+            f" at {cfg.bedrock_world_dir}")
         log("Available directories in parent:")
         parent = cfg.bedrock_world_dir.parent
         if parent.exists():
@@ -64,6 +79,21 @@ def validate_environment(cfg: Config) -> None:
                 log(f"  - {item}")
         raise FileNotFoundError(
             f"Bedrock world not found: {cfg.bedrock_world_dir}")
+
+
+def prepare_bedrock_world_source(bedrock_world_dir: Path) -> tuple[Path, Path | None]:
+    """Return a writable world path for Amulet and optional temp dir for cleanup."""
+    if os.access(bedrock_world_dir, os.W_OK):
+        return bedrock_world_dir, None
+
+    temp_root = Path(tempfile.mkdtemp(prefix="bedrock-world-snapshot-"))
+    snapshot_dir = temp_root / bedrock_world_dir.name
+
+    log("Bedrock world is read-only; creating writable snapshot for conversion...")
+    shutil.copytree(bedrock_world_dir, snapshot_dir)
+    log(f"Snapshot created at: {snapshot_dir}")
+
+    return snapshot_dir, temp_root
 
 
 def convert_bedrock_to_java(cfg: Config) -> Path:
@@ -80,36 +110,70 @@ def convert_bedrock_to_java(cfg: Config) -> Path:
     log(f"Target (Java): {cfg.java_world_dir}")
     log("=" * 60)
 
+    bedrock_world = None
+    java_wrapper = None
+    snapshot_root = None
+    progress_started = False
+    emitted_percent = -1
     try:
+        load_world_path, snapshot_root = prepare_bedrock_world_source(
+            cfg.bedrock_world_dir
+        )
+
         # Load Bedrock world
         log("Loading Bedrock world...")
-        bedrock_world = amulet.load_level(str(cfg.bedrock_world_dir))
-        log(f"Bedrock world loaded: {bedrock_world.level_name}")
+        bedrock_world = amulet.load_level(str(load_world_path))
+        log(f"Bedrock world loaded: {cfg.bedrock_world_dir.name}")
 
-        # Get the overworld dimension
+        log(f"Platform detected: {bedrock_world.level_wrapper.platform}")
         dimension = bedrock_world.dimensions[0]  # Bedrock overworld
         log(f"World bounds: {bedrock_world.bounds(dimension)}")
+        log(f"Game version: {bedrock_world.level_wrapper.game_version_string}")
 
         # Create output directory
         if cfg.java_world_dir.exists():
             log(f"Removing existing Java world at {cfg.java_world_dir}")
             shutil.rmtree(cfg.java_world_dir)
 
-        cfg.java_world_dir.mkdir(parents=True, exist_ok=True)
-
         # Save as Java Edition
         log("Converting and saving as Java Edition format...")
         log("This may take a while depending on world size...")
 
-        # Use Amulet's save_as method to convert
-        bedrock_world.save_as(
-            str(cfg.java_world_dir),
-            "java",  # Target format
-            bedrock_world.game_version_string,  # Keep same game version
+        # Create Java output wrapper, then save Bedrock world into it.
+        java_wrapper = AnvilFormat(str(cfg.java_world_dir))
+        java_wrapper.create_and_open(
+            platform="java",
+            version=bedrock_world.level_wrapper.version,
+            overwrite=True,
         )
 
+        # save(wrapper, progress_callback) is the correct Amulet API.
+        sys.stdout.write("Progress: ")
+        sys.stdout.flush()
+        progress_started = True
+
+        def progress_callback(chunk_index: int, chunk_count: int) -> None:
+            nonlocal emitted_percent
+            if chunk_count <= 0:
+                return
+            percent = (chunk_index * 100) // chunk_count
+            while emitted_percent < percent:
+                emitted_percent += 1
+                sys.stdout.write(".")
+            sys.stdout.flush()
+
+        bedrock_world.save(wrapper=java_wrapper,
+                           progress_callback=progress_callback)
+        if progress_started:
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+            progress_started = False
+
         log("Closing worlds...")
+        java_wrapper.close()
+        java_wrapper = None
         bedrock_world.close()
+        bedrock_world = None
 
         log("Conversion complete!")
         log(f"Java world created at: {cfg.java_world_dir}")
@@ -124,12 +188,33 @@ def convert_bedrock_to_java(cfg: Config) -> Path:
         import traceback
         traceback.print_exc()
         raise
+    finally:
+        if progress_started:
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+        if java_wrapper is not None:
+            try:
+                java_wrapper.close()
+            except Exception:
+                pass
+        if bedrock_world is not None:
+            try:
+                bedrock_world.close()
+            except Exception:
+                pass
+        if snapshot_root is not None:
+            try:
+                shutil.rmtree(snapshot_root)
+            except Exception:
+                pass
 
 
 def generate_bluemap_config(cfg: Config) -> None:
     """Generate BlueMap configuration files if they don't exist."""
     core_conf = cfg.config_dir / "core.conf"
     webserver_conf = cfg.config_dir / "webserver.conf"
+    webapp_conf = cfg.config_dir / "webapp.conf"
+    file_storage_conf = cfg.config_dir / "storages" / "file.conf"
 
     # First time setup - let BlueMap generate default configs
     if not core_conf.exists():
@@ -159,7 +244,9 @@ def generate_bluemap_config(cfg: Config) -> None:
 
         # Update accept-download to true
         content = content.replace(
-            "accept-download: false", "accept-download: true")
+            "accept-download: false",
+            "accept-download: true"
+        )
 
         # Update render thread count if specified
         import re
@@ -177,15 +264,62 @@ def generate_bluemap_config(cfg: Config) -> None:
         log("Updating webserver.conf...")
         content = webserver_conf.read_text(encoding="utf-8")
 
-        # Update webroot path
-        content = re.sub(
-            r'webroot:\s*"[^"]*"',
-            f'webroot: "{cfg.output_path}"',
-            content
+        # Update webroot path (supports quoted or unquoted existing values)
+        webroot_line = f'webroot: "{cfg.output_path}"'
+        updated, count = re.subn(
+            r'(?m)^\s*webroot:\s*(?:"[^"]*"|\S+)\s*$',
+            webroot_line,
+            content,
         )
+        if count == 0:
+            if not updated.endswith("\n"):
+                updated += "\n"
+            updated += webroot_line + "\n"
+        content = updated
 
         webserver_conf.write_text(content, encoding="utf-8")
         log(f"webserver.conf updated with webroot: {cfg.output_path}")
+
+    # Update webapp.conf
+    if webapp_conf.exists():
+        log("Updating webapp.conf...")
+        content = webapp_conf.read_text(encoding="utf-8")
+
+        webroot_line = f'webroot: "{cfg.output_path}"'
+        updated, count = re.subn(
+            r'(?m)^\s*webroot:\s*(?:"[^"]*"|\S+)\s*$',
+            webroot_line,
+            content,
+        )
+        if count == 0:
+            if not updated.endswith("\n"):
+                updated += "\n"
+            updated += webroot_line + "\n"
+        content = updated
+
+        webapp_conf.write_text(content, encoding="utf-8")
+        log(f"webapp.conf updated with webroot: {cfg.output_path}")
+
+    # Update storages/file.conf
+    if file_storage_conf.exists():
+        log("Updating storages/file.conf...")
+        content = file_storage_conf.read_text(encoding="utf-8")
+
+        storage_root = cfg.output_path / "maps"
+        root_line = f'root: "{storage_root}"'
+        updated, count = re.subn(
+            r'(?m)^\s*root:\s*(?:"[^"]*"|\S+)\s*$',
+            root_line,
+            content,
+        )
+        if count == 0:
+            if not updated.endswith("\n"):
+                updated += "\n"
+            updated += root_line + "\n"
+        content = updated
+
+        file_storage_conf.write_text(content, encoding="utf-8")
+        log(f"storages/file.conf updated with root: {storage_root}")
 
 
 def write_map_config(cfg: Config) -> None:
@@ -209,6 +343,15 @@ def write_map_config(cfg: Config) -> None:
             r'name:\s*"[^"]*"', f'name: "{cfg.map_name}"', sample_content)
         sample_content = re.sub(
             r'world:\s*"[^"]*"', f'world: "{cfg.java_world_dir}"', sample_content)
+        sample_content, count = re.subn(
+            r'(?m)^\s*ambient-light:\s*[0-9]*\.?[0-9]+\s*$',
+            f'ambient-light: {cfg.ambient_light}',
+            sample_content,
+        )
+        if count == 0:
+            if not sample_content.endswith("\n"):
+                sample_content += "\n"
+            sample_content += f"ambient-light: {cfg.ambient_light}\n"
 
         map_conf_path.write_text(sample_content, encoding="utf-8")
         log(f"Map configuration written to {map_conf_path} (from template)")
@@ -242,7 +385,7 @@ start-pos: {{x: 0, z: 0}}
 sky-color: "#7dabff"
 
 # Defines the ambient light
-ambient-light: 0.1
+ambient-light: {cfg.ambient_light}
 
 # Defines the view-distance for hires tiles
 hires-view-distance: {cfg.hires_view_distance}
@@ -350,7 +493,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--bedrock-world-dir",
         default=os.getenv("BEDROCK_WORLD_DIR",
-                          "/bedrock/worlds/Bedrock level"),
+                          "/bedrock/worlds/world"),
         help="Path to Bedrock world directory",
     )
     parser.add_argument(
@@ -360,7 +503,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument(
         "--output-path",
-        default=os.getenv("OUTPUT_PATH", "/webroot"),
+        default=os.getenv("OUTPUT_PATH", "mapper-output/webroot"),
         help="Directory where rendered map files are written",
     )
     parser.add_argument(
@@ -381,6 +524,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Seconds between automatic re-renders",
     )
     parser.add_argument(
+        "--ambient-light",
+        type=float,
+        default=float(os.getenv("BLUEMAP_AMBIENT_LIGHT", "1.0")),
+        help="Ambient light for generated BlueMap map config",
+    )
+    parser.add_argument(
         "--bluemap-jar",
         default=os.getenv("BLUEMAP_JAR", "/opt/bluemap/BlueMap-cli.jar"),
         help="Path to BlueMap CLI JAR file",
@@ -395,18 +544,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     bedrock_world_dir = Path(args.bedrock_world_dir)
+    output_path = normalize_output_path(Path(args.output_path))
     java_world_dir = Path(args.java_world_dir) if args.java_world_dir else (
-        Path(args.output_path).parent / f"java_{bedrock_world_dir.name}")
+        output_path.parent / f"java_{bedrock_world_dir.name}")
 
     cfg = Config(
         bedrock_world_dir=bedrock_world_dir,
         java_world_dir=java_world_dir,
-        output_path=Path(args.output_path),
+        output_path=output_path,
         config_dir=Path(args.config_dir),
         bluemap_jar=Path(args.bluemap_jar),
         render_threads=args.render_threads,
         render_interval=args.render_interval,
         skip_conversion=args.skip_conversion,
+        ambient_light=args.ambient_light,
     )
 
     log("=" * 60)
@@ -418,6 +569,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     log(f"Config dir: {cfg.config_dir}")
     log(f"BlueMap JAR: {cfg.bluemap_jar}")
     log(f"Render threads: {cfg.render_threads}")
+    log(f"Ambient light: {cfg.ambient_light}")
     log(f"Skip conversion: {cfg.skip_conversion}")
     log("=" * 60)
 

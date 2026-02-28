@@ -51,6 +51,7 @@ install_system_deps() {
         curl
         wget
         ca-certificates
+        git
         openjdk-21-jre-headless
         ninja-build
         python3-pip
@@ -156,6 +157,27 @@ install_modern_cmake() {
     log_info "Using CMake: $($CMAKE_DIR/bin/cmake --version | head -n1)"
 }
 
+install_binary_python_dep() {
+    local package="$1"
+    local timeout_seconds="${2:-0}"  # Default timeout of 0 seconds (no timeout)
+    log_info "Installing binary Python package: $package"
+    # Build dep from source to ensure C extensions are included (binary wheel doesn't include C extensions on all systems)
+    # Timeout after ${timeout_seconds} seconds in case build takes abnormally long
+    log_info "Installing $package (includes C extensions, timeout: ${timeout_seconds} seconds)..."
+    if timeout "$timeout_seconds" python3 -m pip install --no-cache-dir --no-binary="$package" "$package"; then
+        log_info "$package installed successfully"
+    else
+        local exit_code=$?
+        if [[ $exit_code -eq 124 ]]; then
+            log_error "$package installation timed out after ${timeout_seconds} seconds (exit code: 124)"
+            exit 1
+        else
+            log_error "$package installation failed with exit code: $exit_code"
+            return $exit_code
+        fi
+    fi
+}
+
 install_python_deps() {
     log_info "Installing Python dependencies for Bedrock conversion..."
     
@@ -163,26 +185,11 @@ install_python_deps() {
     log_info "Installing numpy<2 for compatibility..."
     python3 -m pip install "numpy<2"
     
-    # Build amulet-nbt from source (binary wheel doesn't include C extensions on all systems)
-    # Timeout after 5 minutes in case build takes abnormally long
-    log_info "Building amulet-nbt from source (includes C extensions, timeout: 5 min)..."
-    if timeout 300 python3 -m pip install --no-cache-dir --no-binary=amulet-nbt amulet-nbt; then
-        log_info "amulet-nbt installed successfully"
-    else
-        local exit_code=$?
-        if [[ $exit_code -eq 124 ]]; then
-            log_warning "amulet-nbt installation timed out after 5 minutes (exit code: 124)"
-            log_warning "Build may be taking too long - this could indicate a system issue"
-        else
-            log_error "amulet-nbt installation failed with exit code: $exit_code"
-            return $exit_code
-        fi
-    fi
-    
-    # Install amulet-core (can use binary)
-    log_info "Installing amulet-core..."
-    python3 -m pip install --only-binary=:all: amulet-core
-    
+    install_binary_python_dep "amulet-nbt" 300
+    install_binary_python_dep "amulet-leveldb" 300
+    install_binary_python_dep "amulet-rocksdb"  # no timeout for rocksdb since it can be very slow to build
+    install_binary_python_dep "amulet-core" 300
+
     log_info "Python dependencies installed"
 }
 
@@ -202,7 +209,7 @@ setup_venv() {
             log_info "Removing existing virtual environment..."
             rm -rf "$venv_dir"
         else
-            return
+            return 0
         fi
     fi
 

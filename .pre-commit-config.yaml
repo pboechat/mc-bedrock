@@ -1,0 +1,11 @@
+repos:
+  - repo: https://github.com/pycqa/isort
+    rev: 5.13.2
+    hooks:
+      - id: isort
+
+  - repo: https://github.com/hhatto/autopep8/
+    rev: v2.3.2
+    hooks:
+      - id: autopep8
+        args: [--ignore=E501]
