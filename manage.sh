@@ -68,16 +68,21 @@ case "${1:-}" in
         docker compose down
         docker compose up -d "$@"
         ;;
+    restart-mapper|mapper-restart)
+        echo "Restarting mapper service only..."
+        docker compose restart mapper
+        ;;
     status)
         docker compose ps
         ;;
     *)
-        echo "Usage: $0 {start|stop|restart|status} [additional docker compose args]"
+        echo "Usage: $0 {start|stop|restart|restart-mapper|mapper-restart|status} [additional docker compose args]"
         echo ""
         echo "Commands:"
         echo "  start    - Start the server"
         echo "  stop     - Stop the server"
         echo "  restart  - Restart the server"
+        echo "  restart-mapper (or mapper-restart) - Restart only the mapper service"
         echo "  status   - Show service status"
         exit 1
         ;;

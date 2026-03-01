@@ -22,7 +22,7 @@ The system consists of two Docker services orchestrated via docker-compose:
 │ 1. Reads world  │
 │ 2. Renders map  │
 │ 3. Serves via   │
-│    nginx        │
+│    BlueMap      │
 └────────┬────────┘
          │
          ▼
@@ -59,6 +59,9 @@ The server runs via Docker Compose and can be managed with the included scripts:
 
 # Restart
 ./manage.sh restart
+
+# Restart mapper only (without restarting Bedrock)
+./manage.sh restart-mapper
 
 # Check status
 ./manage.sh status

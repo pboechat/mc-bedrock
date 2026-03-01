@@ -21,7 +21,7 @@ services:
 
     volumes:
       - ./data:/data
-    # Hardening (optional but recommended)
+    # Optional hardening (untested)
     # read_only: true
     # tmpfs:
     #   - /tmp
@@ -34,17 +34,15 @@ services:
     build: ./mapper
     container_name: mc-map
     restart: unless-stopped
-    environment:
-      # Path to Bedrock world inside this container (via volume mount)
-      BEDROCK_WORLD_DIR: "/bedrock/worlds/world"
-      # Where to write the rendered map files
-      OUTPUT_PATH: "/webroot"
-      # BlueMap configuration directory
-      CONFIG_DIR: "/opt/bluemap/config"
-      # Number of threads for rendering (adjust based on CPU)
-      BLUEMAP_RENDER_THREADS: "2"
-      # How often to re-render the map (in seconds, default: 3600 = 1 hour)
-      RENDER_INTERVAL: "3600"
+    environment: {}
+      # BEDROCK_WORLD_DIR: "/bedrock/worlds/world"  # Path to Bedrock world inside this container (via volume mount)
+      # OUTPUT_PATH: "/webroot"  # Where to write the rendered map files
+      # JAVA_WORLD_DIR: "/bedrock/worlds/world_java"  # Path to converted Java world
+      # CONFIG_DIR: "/opt/bluemap/config"  # BlueMap configuration directory
+      # BLUEMAP_RENDER_THREADS: "2"  # Number of threads for rendering (adjust based on CPU)
+      # RENDER_INTERVAL: "600"  # How often to re-render the map (in seconds)
+      # BLUEMAP_AMBIENT_LIGHT: "1.0"  # Adjust ambient light level in the map (0.0 to 1.0)
+      # BLUEMAP_JAR: /opt/bluemap/BlueMap-cli.jar  # Path to BlueMap CLI jar (if not using built-in version)
     ports:
       - "8100:8100"
     volumes:
